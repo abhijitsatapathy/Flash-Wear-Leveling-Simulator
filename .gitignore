@@ -1,0 +1,19 @@
+# Kernel build files
+*.ko
+*.o
+*.mod
+*.mod.c
+*.order
+*.symvers
+.tmp_versions/
+.*.cmd
+
+# Executables
+wear_manager
+virtual_nand_app
+
+# Logs
+*.log
+
+# Editor files
+.vscode/
