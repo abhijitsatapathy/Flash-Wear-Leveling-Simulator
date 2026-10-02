@@ -340,6 +340,10 @@ static ssize_t vnand_write(struct file *filp, const char __user *buf,
 
 	return count;
 }
+static loff_t vnand_llseek(struct file *filp, loff_t offset, int whence)
+{
+    return fixed_size_llseek(filp, offset, whence, NAND_TOTAL_SIZE);
+}
 
 static const struct file_operations vnand_fops = {
 	.owner          = THIS_MODULE,
@@ -347,6 +351,7 @@ static const struct file_operations vnand_fops = {
 	.release        = vnand_release,
 	.read           = vnand_read,
 	.write          = vnand_write,
+	.llseek         = vnand_llseek,
 	.unlocked_ioctl = vnand_ioctl,
 };
 
