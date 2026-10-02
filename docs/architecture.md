@@ -56,7 +56,7 @@ The C++ application (`cpp/main.cpp`, executable `vnand_manager`) provides a comm
 - Reads data from a chosen offset (`lseek()` + `read()`)
 - Erases a block (via `ioctl()`)
 - Shows the erase count of every block
-- Performs a wear-level write, using the least-worn block selection described in Section 10
+- Performs a wear-level write, using the least-worn block selection described in Section 11
 - Validates user input and reports the result of each operation
 
 The application reaches the driver only through system calls, and it uses the shared header `include/virtual_nand_ioctl.h` for ioctl command numbers and data structures.
@@ -68,7 +68,7 @@ The application reaches the driver only through system calls, and it uses the sh
 `/dev/virtualnand` is a character device node. It is the only connection between the two layers.
 
 - `open()` returns a file descriptor linked to the driver.
-- `read()`, `write()`, `lseek()`, and `ioctl()` on that descriptor are dispatched to the matching functions in the driver's `file_operations` table (`.read`, `.write`, `.llseek` support, `.unlocked_ioctl`).
+- `read()`, `write()`, `lseek()`, and `ioctl()` on that descriptor are dispatched to the matching functions in the driver's `file_operations` table (`.read`, `.write`, `.llseek`, `.unlocked_ioctl`).
 - `close()` releases the descriptor and calls the driver's `.release` function.
 
 ---
@@ -79,7 +79,7 @@ The kernel module (`driver/virtual_nand_driver.c`) is responsible for:
 
 - Registering the character device and creating `/dev/virtualnand` on module load, and removing everything cleanly on unload
 - Allocating and initializing the simulated NAND memory
-- Implementing `open`, `release`, `read`, `write`, and `ioctl`
+- Implementing `open`, `release`, `read`, `write`, `llseek`, and `ioctl`
 - Checking bounds on reads and writes and validating block IDs
 - Copying data safely between user space and kernel space with `copy_from_user()` and `copy_to_user()`
 - Performing block erase and maintaining erase counters and used-page tracking
