@@ -3,6 +3,9 @@
 // Talks to the Linux driver ONLY through the device file /dev/virtualnand,
 // using these system calls: open(), close(), lseek(), read(), write(), ioctl().
 //
+// Wear-leveling policy (menu option 7) lives HERE, not in the driver:
+//   "write to the block with the lowest erase_count; on a tie, the smallest ID".
+//
 // Build:  make          Run:  sudo ./vnand_manager
 
 #include <iostream>
@@ -86,6 +89,44 @@ int ioctlEraseBlock(int fd, __u32 id)
 {
     if (ioctl(fd, VNAND_IOC_ERASE_BLOCK, &id) < 0)
         return errno;
+    return 0;
+}
+
+// ---------------------------------------------------------------
+// Wear-leveling policy: pick the least-worn block
+// ---------------------------------------------------------------
+
+// Asks the driver for every block's erase_count and chooses the smallest.
+// Tie-break: smallest block ID. Returns 0 on success, or an errno value.
+int findLeastWornBlock(int fd, __u32 &selectedBlock, __u32 &eraseCount)
+{
+    // 1. How many blocks does the device have? (never hardcoded)
+    vnand_device_info dev{};
+    int err = ioctlGetDeviceInfo(fd, dev);
+    if (err != 0)
+        return err;
+    if (dev.block_count == 0)
+        return ENODEV;
+
+    // 2. Walk the blocks in order 0, 1, 2, ... and remember the best one so far
+    bool found = false;
+    for (__u32 b = 0; b < dev.block_count; b++) {
+        vnand_block_info info{};
+        err = ioctlGetBlockInfo(fd, b, info);
+        if (err != 0)
+            return err;
+
+        // Strictly "<": an equal erase count never replaces the current choice.
+        // Blocks are visited in ascending order, so on a tie the SMALLER ID wins.
+        if (!found || info.erase_count < eraseCount) {
+            selectedBlock = b;
+            eraseCount = info.erase_count;
+            found = true;
+        }
+    }
+
+    std::cout << "Least-worn block selected: " << selectedBlock << "\n"
+              << "Current erase count: " << eraseCount << "\n";
     return 0;
 }
 
@@ -232,16 +273,17 @@ void eraseBlock(int fd)
         std::cout << "Erase failed: " << std::strerror(err) << "\n";
 }
 
-void showAllEraseCounts(int fd)
+// Prints "Block N : erase_count" for every block. Returns false on ioctl failure.
+bool printEraseCounts(int fd, const char *title)
 {
     vnand_device_info dev{};
     int err = ioctlGetDeviceInfo(fd, dev);
     if (err != 0) {
         std::cout << "ioctl GET_DEVICE_INFO failed: " << std::strerror(err) << "\n";
-        return;
+        return false;
     }
 
-    std::cout << "--- Erase counts ---\n";
+    std::cout << title << "\n";
     for (__u32 b = 0; b < dev.block_count; b++) {
         vnand_block_info info{};
         err = ioctlGetBlockInfo(fd, b, info);
@@ -251,6 +293,73 @@ void showAllEraseCounts(int fd)
         }
         std::cout << "Block " << b << " : " << info.erase_count << "\n";
     }
+    return true;
+}
+
+void showAllEraseCounts(int fd)
+{
+    printEraseCounts(fd, "--- Erase counts ---");
+}
+
+// Menu option 7: write the data to the least-worn block (start of that block).
+// This does NOT change any erase count; only VNAND_IOC_ERASE_BLOCK does that.
+void wearLevelWrite(int fd)
+{
+    std::cout << "Enter data: ";
+    std::string data;
+    std::getline(std::cin, data);               // whole line, spaces allowed
+    if (data.empty()) {
+        std::cout << "Nothing to write.\n";
+        return;
+    }
+
+    // 1. Device geometry -> size of one block in bytes
+    vnand_device_info dev{};
+    int err = ioctlGetDeviceInfo(fd, dev);
+    if (err != 0) {
+        std::cout << "ioctl GET_DEVICE_INFO failed: " << std::strerror(err) << "\n";
+        return;
+    }
+    const size_t blockSize = static_cast<size_t>(dev.pages_per_block) * dev.page_size;
+
+    // 2. The data must fit inside ONE block (never cross into the next one)
+    if (data.size() > blockSize) {
+        std::cout << "Data is too large for one NAND block.\n"
+                  << "Maximum block size: " << blockSize << " bytes\n";
+        return;
+    }
+
+    // 3. Show the current wear, then let the policy decide
+    if (!printEraseCounts(fd, "Current erase counts:"))
+        return;
+
+    __u32 selectedBlock = 0;
+    __u32 eraseCount = 0;
+    err = findLeastWornBlock(fd, selectedBlock, eraseCount);
+    if (err != 0) {
+        std::cout << "Wear-level selection failed: " << std::strerror(err) << "\n";
+        return;
+    }
+
+    // 4. Byte offset where the selected block starts
+    const off_t blockOffset = static_cast<off_t>(selectedBlock) * static_cast<off_t>(blockSize);
+
+    // 5. lseek() to that block, then write()
+    if (lseek(fd, blockOffset, SEEK_SET) == static_cast<off_t>(-1)) {
+        perror("lseek");
+        return;
+    }
+    ssize_t n = write(fd, data.data(), data.size());
+    if (n < 0) {
+        perror("write");
+        return;
+    }
+
+    std::cout << "Wear-level write successful.\n"
+              << "Selected block : " << selectedBlock << "\n"
+              << "Erase count    : " << eraseCount << "\n"
+              << "Offset         : " << static_cast<long long>(blockOffset) << "\n"
+              << "Bytes written  : " << n << "\n";
 }
 
 void printMenu()
@@ -262,6 +371,7 @@ void printMenu()
               << "4. Read data\n"
               << "5. Erase block\n"
               << "6. Show all erase counts\n"
+              << "7. Wear-level write\n"
               << "0. Exit\n";
 }
 
@@ -294,9 +404,10 @@ int main()
         case 4: readData(fd);            break;
         case 5: eraseBlock(fd);          break;
         case 6: showAllEraseCounts(fd);  break;
+        case 7: wearLevelWrite(fd);      break;
         case 0: running = false;         break;
         default:
-            std::cout << "Invalid menu selection. Choose 0-6.\n";
+            std::cout << "Invalid menu selection. Choose 0-7.\n";
             break;
         }
     }
